@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 // ─── Palette ────────────────────────────────────────────────────────────────
 const C = {
@@ -273,10 +273,26 @@ const SEED = {
 };
 
 // ─── Storage helpers ──────────────────────────────────────────────────────────
+const WORKER_URL = 'https://iwaaju-data-api.olakunlealao.workers.dev';
 const store = {
-  get:    (k, fb = null) => { try { const v = window.localStorage.getItem(k); return v ? JSON.parse(v) : fb; } catch { return fb; } },
-  set:    (k, v)         => { try { window.localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } },
-  getAll: ()             => { try { return Object.fromEntries(Object.entries(SK).map(([, k]) => [k, store.get(k)])); } catch { return {}; } },
+  get: async (key, fallback = null) => {
+    try {
+      const res = await fetch(`${WORKER_URL}/data/${key}`);
+      if (!res.ok) return fallback;
+      const data = await res.json();
+      return data.value ?? fallback;
+    } catch { return fallback; }
+  },
+  set: async (key, value) => {
+    try {
+      await fetch(`${WORKER_URL}/data/${key}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value })
+      });
+      return true;
+    } catch { return false; }
+  }
 };
 
 // ─── Utils ────────────────────────────────────────────────────────────────────
@@ -437,21 +453,44 @@ function PosForm({ initial, onSave, onCancel }) {
   );
 }
 
-function PortfolioTab({ portfolio, setPortfolio }) {
+function PortfolioTab({ portfolio, setPortfolio, showToast }) {
   const [addOpen, setAddOpen]   = useState(false);
   const [editId, setEditId]     = useState(null);
   const [viewId, setViewId]     = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const save = pos => {
-    setPortfolio(prev => {
-      const next = prev.find(p => p.id === pos.id) ? prev.map(p => p.id === pos.id ? pos : p) : [...prev, pos];
-      store.set(SK.portfolio, next);
-      return next;
-    });
+  const refreshPrices = async () => {
+    if (!portfolio.length || refreshing) return;
+    setRefreshing(true);
+    try {
+      const tickers = portfolio.map(p => p.ticker).filter(Boolean).join(',');
+      const res = await fetch(`${WORKER_URL}/prices?tickers=${encodeURIComponent(tickers)}`);
+      const prices = await res.json();
+      if (!res.ok || prices.error) throw new Error(prices.error || 'Price fetch failed');
+      const next = portfolio.map(p => {
+        const price = prices[p.ticker?.toUpperCase()];
+        return typeof price === 'number' ? { ...p, currentPrice: price } : p;
+      });
+      setPortfolio(next);
+      await store.set(SK.portfolio, next);
+      showToast('Prices updated');
+    } catch (err) {
+      showToast(`Price refresh failed: ${err.message}`, 'err');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const save = async pos => {
+    const next = portfolio.find(p => p.id === pos.id) ? portfolio.map(p => p.id === pos.id ? pos : p) : [...portfolio, pos];
+    setPortfolio(next);
+    await store.set(SK.portfolio, next);
     setAddOpen(false); setEditId(null);
   };
-  const del = id => {
-    setPortfolio(prev => { const next = prev.filter(p => p.id !== id); store.set(SK.portfolio, next); return next; });
+  const del = async id => {
+    const next = portfolio.filter(p => p.id !== id);
+    setPortfolio(next);
+    await store.set(SK.portfolio, next);
     setViewId(null);
   };
 
@@ -482,7 +521,10 @@ function PortfolioTab({ portfolio, setPortfolio }) {
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <span style={{ fontSize: 13, color: C.muted }}>{portfolio.length} position{portfolio.length !== 1 ? 's' : ''}</span>
-        <Btn onClick={() => setAddOpen(true)} variant="primary">+ Add Position</Btn>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <Btn onClick={refreshPrices} variant="secondary" disabled={refreshing}>{refreshing ? 'Refreshing...' : 'Refresh Prices'}</Btn>
+          <Btn onClick={() => setAddOpen(true)} variant="primary">+ Add Position</Btn>
+        </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(295px,1fr))', gap: 14 }}>
@@ -560,16 +602,16 @@ function AIAnalysis({ portfolio, research, journal }) {
     if (!q.trim()) return;
     setLod(true); setResp('');
     const ctx = `PORTFOLIO:\n${JSON.stringify(portfolio, null, 2)}\n\nRESEARCH:\n${JSON.stringify(research, null, 2)}\n\nJOURNAL (recent 3):\n${journal.slice(0, 3).map(j => `${j.date} — ${j.subject}\n${j.content}`).join('\n\n')}`;
-    const prompt = `You are the Iwájú Scout, an investment intelligence analyst. The investor's complete data is below. Answer their question with precision. Be direct, evidence-based, with clear reasoning. End every response with "Scout surfaces. You decide."\n\nINVESTOR DATA:\n${ctx}\n\nQUESTION: ${q}`;
+    const prompt = `You are the Iwájú investment analyst. Iwájú invests when a structural shift is culturally visible but not yet financially crowded. Four layers:\nL1: AI infrastructure picks-and-shovels\nL2: Prediction markets, identity, behavioral\nL3: Cultural biology, GLP-1, longevity\nL4: Physical AI and robotics\nHorizon: 18-36 months. Exit only when thesis invalidation trigger is hit.\n\nThe investor's complete data is below. Answer their question with precision. Be direct, evidence-based, with clear reasoning. End every response with "Scout surfaces. You decide."\n\nFor every analysis:\n1. State P&L vs entry price\n2. Check Scout signals — accelerating or cooling?\n3. Run all three exit triggers explicitly\n4. Name the next catalyst in 30-60 days\n5. End with one unresolved question\n\nFormat:\n## TICKER Thesis Check\nStatus: Intact/Monitor/Review\n[P&L] [Signals] [Triggers] [Catalyst] [Question]\nScout surfaces. You decide.\n\nINVESTOR DATA:\n${ctx}\n\nQUESTION: ${q}`;
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
+      const res = await fetch('https://iwaaju-data-api.olakunlealao.workers.dev/analyze', {
         method: 'POST',
-        headers: { 'anthropic-version': '2023-06-01', 'content-type': 'application/json', 'anthropic-dangerous-direct-browser-calls': 'true' },
-        body: JSON.stringify({ model: 'claude-opus-4-8', max_tokens: 1024, messages: [{ role: 'user', content: prompt }] }),
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt }),
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error.message);
-      setResp(data.content?.[0]?.text || 'No response received.');
+      if (data.error) throw new Error(data.error);
+      setResp(data.result || 'No response received.');
     } catch (err) {
       setResp(`Analysis unavailable: ${err.message}`);
     } finally {
@@ -610,10 +652,10 @@ function JournalTab({ journal, setJournal, portfolio, research }) {
   const entry = journal.find(j => j.id === sel);
   const sentCol = { positive: C.green, cautious: C.amber, negative: C.red, neutral: C.muted };
 
-  const saveEntry = () => {
+  const saveEntry = async () => {
     const e = { ...f, id: `j${Date.now()}`, from: 'Manual Entry', positions: f.positions.split(',').map(t => t.trim().toUpperCase()).filter(Boolean) };
     const next = [e, ...journal];
-    setJournal(next); store.set(SK.journal, next);
+    setJournal(next); await store.set(SK.journal, next);
     setAdd(false); setSel(e.id);
     setF({ subject: '', date: new Date().toISOString().slice(0, 10), summary: '', content: '', positions: '', sentiment: 'neutral' });
   };
@@ -739,10 +781,10 @@ function ResearchTab({ research, setResearch }) {
   const shown   = filter === 'all' ? research : research.filter(r => r.ticker === filter);
   const vn      = viewId ? research.find(r => r.id === viewId) : null;
 
-  const saveNote = () => {
+  const saveNote = async () => {
     const n = { ...f, id: `r${Date.now()}`, sources: f.sources.split('\n').filter(Boolean), tags: f.tags.split(',').map(t => t.trim()).filter(Boolean) };
     const next = [n, ...research];
-    setResearch(next); store.set(SK.research, next);
+    setResearch(next); await store.set(SK.research, next);
     setAdd(false); setF(blank);
   };
 
@@ -776,7 +818,7 @@ function ResearchTab({ research, setResearch }) {
               </div>
             )}
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Btn onClick={() => { setResearch(prev => { const next = prev.filter(r => r.id !== vn.id); store.set(SK.research, next); return next; }); setView(null); }} variant="danger">Delete Note</Btn>
+              <Btn onClick={async () => { const next = research.filter(r => r.id !== vn.id); setResearch(next); await store.set(SK.research, next); setView(null); }} variant="danger">Delete Note</Btn>
             </div>
           </div>
         )}
@@ -804,7 +846,7 @@ function ResearchTab({ research, setResearch }) {
 }
 
 // ─── CATALYSTS TAB ────────────────────────────────────────────────────────────
-function CatalystItem({ c }) {
+function CatalystItem({ c, onEdit }) {
   const daysUntil = Math.ceil((new Date(c.date) - new Date()) / 86400000);
   const impactCol = { high: C.red, medium: C.amber, low: C.muted }[c.impact] || C.muted;
   const statusMeta = { pending: { color: C.blue, label: 'Pending' }, triggered: { color: C.green, label: 'Triggered' }, expired: { color: C.dim, label: 'Expired' } }[c.status] || {};
@@ -825,7 +867,10 @@ function CatalystItem({ c }) {
             <Badge label={statusMeta.label} color={statusMeta.color} />
             <span style={{ fontSize: 10, color: impactCol, fontWeight: 700, textTransform: 'uppercase' }}>{c.impact} impact</span>
           </div>
-          <span style={{ fontSize: 11, color: C.muted }}>{fmt.date(c.date)}</span>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: C.muted }}>{fmt.date(c.date)}</span>
+            <Btn onClick={onEdit} variant="ghost" sx={{ fontSize: 10, padding: '3px 8px' }}>Edit</Btn>
+          </div>
         </div>
         <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 6 }}>{c.title}</div>
         <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.55 }}>{c.description}</div>
@@ -835,20 +880,44 @@ function CatalystItem({ c }) {
   );
 }
 
+function CatForm({ initial, onSave, onCancel }) {
+  const blank = { ticker: '', date: '', title: '', type: 'earnings', description: '', impact: 'medium', status: 'pending', timeframe: '', notes: '' };
+  const [f, setF] = useState(initial ? { ...initial } : blank);
+  const u = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const save = () => onSave({ ...f, id: initial?.id || `c${Date.now()}` });
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+        <Fld label="Ticker"><Inp value={f.ticker} onChange={e => u('ticker', e.target.value.toUpperCase())} placeholder="AAPL" /></Fld>
+        <Fld label="Date"><Inp value={f.date} onChange={e => u('date', e.target.value)} placeholder="YYYY-MM-DD" /></Fld>
+        <Fld label="Type"><Sel value={f.type} onChange={e => u('type', e.target.value)} options={[{ value: 'earnings', label: 'Earnings' }, { value: 'clinical-data', label: 'Clinical Data' }, { value: 'product-launch', label: 'Product Launch' }, { value: 'regulatory', label: 'Regulatory' }, { value: 'macro', label: 'Macro Event' }, { value: 'other', label: 'Other' }]} /></Fld>
+        <Fld label="Impact"><Sel value={f.impact} onChange={e => u('impact', e.target.value)} options={[{ value: 'high', label: 'High' }, { value: 'medium', label: 'Medium' }, { value: 'low', label: 'Low' }]} /></Fld>
+        <Fld label="Status"><Sel value={f.status} onChange={e => u('status', e.target.value)} options={[{ value: 'pending', label: 'Pending' }, { value: 'triggered', label: 'Triggered' }, { value: 'expired', label: 'Expired' }]} /></Fld>
+        <Fld label="Timeframe"><Inp value={f.timeframe} onChange={e => u('timeframe', e.target.value)} placeholder="Q3 2025" /></Fld>
+      </div>
+      <Fld label="Title"><Inp value={f.title} onChange={e => u('title', e.target.value)} placeholder="Catalyst title…" /></Fld>
+      <Fld label="Description"><Inp multi value={f.description} onChange={e => u('description', e.target.value)} placeholder="What to watch and why it matters…" rows={3} /></Fld>
+      <Fld label="Scout Notes"><Inp multi value={f.notes} onChange={e => u('notes', e.target.value)} placeholder="Threshold conditions, what to look for…" rows={2} /></Fld>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+        <Btn onClick={onCancel} variant="ghost">Cancel</Btn>
+        <Btn onClick={save} variant="primary">Save Catalyst</Btn>
+      </div>
+    </div>
+  );
+}
+
 function CatalystsTab({ catalysts, setCatalysts }) {
   const [status, setStatus] = useState('pending');
   const [addOpen, setAdd]   = useState(false);
-  const blank = { ticker: '', date: '', title: '', type: 'earnings', description: '', impact: 'medium', status: 'pending', timeframe: '', notes: '' };
-  const [f, setF] = useState(blank);
-  const u = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const [editId, setEditId] = useState(null);
 
   const shown  = (status === 'all' ? catalysts : catalysts.filter(c => c.status === status)).slice().sort((a, b) => new Date(a.date) - new Date(b.date));
   const counts = { pending: catalysts.filter(c => c.status === 'pending').length, triggered: catalysts.filter(c => c.status === 'triggered').length, expired: catalysts.filter(c => c.status === 'expired').length };
 
-  const save = () => {
-    const next = [...catalysts, { ...f, id: `c${Date.now()}` }];
-    setCatalysts(next); store.set(SK.catalysts, next);
-    setAdd(false); setF(blank);
+  const save = async cat => {
+    const next = catalysts.find(c => c.id === cat.id) ? catalysts.map(c => c.id === cat.id ? cat : c) : [...catalysts, cat];
+    setCatalysts(next); await store.set(SK.catalysts, next);
+    setAdd(false); setEditId(null);
   };
 
   return (
@@ -863,28 +932,15 @@ function CatalystsTab({ catalysts, setCatalysts }) {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {shown.map(c => <CatalystItem key={c.id} c={c} />)}
+        {shown.map(c => <CatalystItem key={c.id} c={c} onEdit={() => setEditId(c.id)} />)}
         {shown.length === 0 && <div style={{ textAlign: 'center', color: C.dim, padding: 60, fontSize: 14 }}>No catalysts in this view.</div>}
       </div>
 
       <Modal open={addOpen} onClose={() => setAdd(false)} title="Add Catalyst">
-        <div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-            <Fld label="Ticker"><Inp value={f.ticker} onChange={e => u('ticker', e.target.value.toUpperCase())} placeholder="AAPL" /></Fld>
-            <Fld label="Date"><Inp value={f.date} onChange={e => u('date', e.target.value)} placeholder="YYYY-MM-DD" /></Fld>
-            <Fld label="Type"><Sel value={f.type} onChange={e => u('type', e.target.value)} options={[{ value: 'earnings', label: 'Earnings' }, { value: 'clinical-data', label: 'Clinical Data' }, { value: 'product-launch', label: 'Product Launch' }, { value: 'regulatory', label: 'Regulatory' }, { value: 'macro', label: 'Macro Event' }, { value: 'other', label: 'Other' }]} /></Fld>
-            <Fld label="Impact"><Sel value={f.impact} onChange={e => u('impact', e.target.value)} options={[{ value: 'high', label: 'High' }, { value: 'medium', label: 'Medium' }, { value: 'low', label: 'Low' }]} /></Fld>
-            <Fld label="Status"><Sel value={f.status} onChange={e => u('status', e.target.value)} options={[{ value: 'pending', label: 'Pending' }, { value: 'triggered', label: 'Triggered' }, { value: 'expired', label: 'Expired' }]} /></Fld>
-            <Fld label="Timeframe"><Inp value={f.timeframe} onChange={e => u('timeframe', e.target.value)} placeholder="Q3 2025" /></Fld>
-          </div>
-          <Fld label="Title"><Inp value={f.title} onChange={e => u('title', e.target.value)} placeholder="Catalyst title…" /></Fld>
-          <Fld label="Description"><Inp multi value={f.description} onChange={e => u('description', e.target.value)} placeholder="What to watch and why it matters…" rows={3} /></Fld>
-          <Fld label="Scout Notes"><Inp multi value={f.notes} onChange={e => u('notes', e.target.value)} placeholder="Threshold conditions, what to look for…" rows={2} /></Fld>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-            <Btn onClick={() => setAdd(false)} variant="ghost">Cancel</Btn>
-            <Btn onClick={save} variant="primary">Save Catalyst</Btn>
-          </div>
-        </div>
+        <CatForm onSave={save} onCancel={() => setAdd(false)} />
+      </Modal>
+      <Modal open={!!editId} onClose={() => setEditId(null)} title="Edit Catalyst">
+        {editId && <CatForm initial={catalysts.find(c => c.id === editId)} onSave={save} onCancel={() => setEditId(null)} />}
       </Modal>
     </div>
   );
@@ -952,16 +1008,16 @@ function ThesisMapTab({ theses, setTheses, portfolio }) {
   };
   const openAdd = () => { setEdit(null); setF(blank); setAdd(true); };
 
-  const save = () => {
+  const save = async () => {
     const t = { ...f, id: editId || `t${Date.now()}`, conviction: +f.conviction || 80, positions: typeof f.positions === 'string' ? f.positions.split(',').map(x => x.trim().toUpperCase()).filter(Boolean) : f.positions, keyAssumptions: typeof f.keyAssumptions === 'string' ? f.keyAssumptions.split('\n').filter(Boolean) : f.keyAssumptions };
     const next = editId ? theses.map(x => x.id === editId ? t : x) : [...theses, t];
-    setTheses(next); store.set(SK.theses, next);
+    setTheses(next); await store.set(SK.theses, next);
     setAdd(false); setEdit(null);
   };
 
-  const del = () => {
+  const del = async () => {
     const next = theses.filter(t => t.id !== editId);
-    setTheses(next); store.set(SK.theses, next);
+    setTheses(next); await store.set(SK.theses, next);
     setAdd(false); setEdit(null);
   };
 
@@ -1022,17 +1078,45 @@ export default function IwaajuDashboard() {
   const [research,  setResearch]  = useState([]);
   const [catalysts, setCatalysts] = useState([]);
   const [theses,    setTheses]    = useState([]);
-  const [toast,     setToast]     = useState(null);
+  const [toast,    setToast]     = useState(null);
+  const [importing, setImporting] = useState(false);
+  const importRef = useRef(null);
 
   useEffect(() => {
-    setPortfolio(store.get(SK.portfolio) || SEED_POSITIONS);
-    setJournal(  store.get(SK.journal)   || SEED.journal);
-    setResearch( store.get(SK.research)  || SEED.research);
-    setCatalysts(store.get(SK.catalysts) || SEED.catalysts);
-    setTheses(   store.get(SK.theses)    || SEED.theses);
+    (async () => {
+      setPortfolio(await store.get(SK.portfolio) || SEED_POSITIONS);
+      setJournal(  await store.get(SK.journal)   || SEED.journal);
+      setResearch( await store.get(SK.research)  || SEED.research);
+      setCatalysts(await store.get(SK.catalysts) || SEED.catalysts);
+      setTheses(   await store.get(SK.theses)    || SEED.theses);
+    })();
   }, []);
 
   const showToast = (msg, type = 'ok') => { setToast({ msg, type }); setTimeout(() => setToast(null), 2600); };
+
+  const importData = async e => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const pairs = [
+        [SK.portfolio, data.portfolio],
+        [SK.journal,   data.journal],
+        [SK.research,  data.research],
+        [SK.catalysts, data.catalysts],
+        [SK.theses,    data.theses],
+      ];
+      await Promise.all(pairs.filter(([, v]) => v != null).map(([k, v]) => store.set(k, v)));
+      showToast('Import complete');
+      window.location.reload();
+    } catch {
+      showToast('Import failed', 'err');
+      setImporting(false);
+    }
+    e.target.value = '';
+  };
 
   const exportData = () => {
     try {
@@ -1072,6 +1156,8 @@ export default function IwaajuDashboard() {
               <div style={{ fontSize: 11, color: C.muted, textAlign: 'right' }}>
                 {portfolio.length} position{portfolio.length !== 1 ? 's' : ''} · {pendingCount} catalyst{pendingCount !== 1 ? 's' : ''} · Next Scout: {nextMonday()}
               </div>
+              <input ref={importRef} type="file" accept=".json" style={{ display: 'none' }} onChange={importData} />
+              <Btn onClick={() => importRef.current?.click()} variant="secondary" disabled={importing} sx={{ fontSize: 11, padding: '6px 13px' }}>{importing ? 'Importing…' : '↑ Import'}</Btn>
               <Btn onClick={exportData} variant="secondary" sx={{ fontSize: 11, padding: '6px 13px' }}>↓ Export</Btn>
             </div>
           </div>
@@ -1087,7 +1173,7 @@ export default function IwaajuDashboard() {
 
       {/* Content */}
       <main style={{ maxWidth: 1200, margin: '0 auto', padding: '32px 24px' }}>
-        {tab === 'portfolio'  && <PortfolioTab  portfolio={portfolio}   setPortfolio={setPortfolio} />}
+        {tab === 'portfolio'  && <PortfolioTab  portfolio={portfolio}   setPortfolio={setPortfolio} showToast={showToast} />}
         {tab === 'journal'    && <JournalTab    journal={journal}       setJournal={setJournal}     portfolio={portfolio} research={research} />}
         {tab === 'research'   && <ResearchTab   research={research}     setResearch={setResearch}   />}
         {tab === 'catalysts'  && <CatalystsTab  catalysts={catalysts}   setCatalysts={setCatalysts} />}
