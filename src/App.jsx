@@ -32,6 +32,7 @@ const SK = {
   research:   'iwaaju_research',
   catalysts:  'iwaaju_catalysts',
   theses:     'iwaaju_theses',
+  preipo:     'iwaaju_preipo',
 };
 
 // ─── Seed data ───────────────────────────────────────────────────────────────
@@ -270,6 +271,13 @@ const SEED = {
       ],
     },
   ],
+  preipo: [
+    { id: 'w1', name: 'OpenAI',     layer: 'L1', secondaryTrend: 'unknown', liquidity: 'unknown', impliedValuation: '', ipoMarkers: '', notes: '', lastUpdated: '' },
+    { id: 'w2', name: 'Anthropic',  layer: 'L1', secondaryTrend: 'unknown', liquidity: 'unknown', impliedValuation: '', ipoMarkers: '', notes: '', lastUpdated: '' },
+    { id: 'w3', name: 'Databricks', layer: 'L1', secondaryTrend: 'unknown', liquidity: 'unknown', impliedValuation: '', ipoMarkers: '', notes: '', lastUpdated: '' },
+    { id: 'w4', name: 'GlycanAge',  layer: 'L3', secondaryTrend: 'unknown', liquidity: 'unknown', impliedValuation: '', ipoMarkers: '', notes: '', lastUpdated: '' },
+    { id: 'w5', name: 'Figure AI',  layer: 'L4', secondaryTrend: 'unknown', liquidity: 'unknown', impliedValuation: '', ipoMarkers: '', notes: '', lastUpdated: '' },
+  ],
 };
 
 // ─── Storage helpers ──────────────────────────────────────────────────────────
@@ -285,12 +293,12 @@ const store = {
   },
   set: async (key, value) => {
     try {
-      await fetch(`${WORKER_URL}/data/${key}`, {
+      const res = await fetch(`${WORKER_URL}/data/${key}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ value })
       });
-      return true;
+      return res.ok;
     } catch { return false; }
   }
 };
@@ -1062,6 +1070,158 @@ function ThesisMapTab({ theses, setTheses, portfolio }) {
   );
 }
 
+// ─── PRE-IPO WATCHLIST TAB ────────────────────────────────────────────────────
+// Manual tracker by design: secondary-market data is gated behind private-market
+// platforms, so every field here is entered by hand. No API wiring.
+const LAYERS = [
+  { id: 'L1',       label: 'L1 · Infrastructure',     color: C.amber  },
+  { id: 'L2',       label: 'L2 · Behavioral / Trust', color: C.blue   },
+  { id: 'L3',       label: 'L3 · Biology',            color: C.green  },
+  { id: 'L4',       label: 'L4 · Physical AI',        color: C.purple },
+  { id: 'emerging', label: 'Emerging',                color: C.muted  },
+];
+const TREND_META = { rising: { label: 'Rising', color: C.green }, flat: { label: 'Flat', color: C.muted }, falling: { label: 'Falling', color: C.red }, unknown: { label: 'Unknown', color: C.dim } };
+const LIQ_META   = { active: { label: 'Active', color: C.green }, thin: { label: 'Thin', color: C.amber }, illiquid: { label: 'Illiquid', color: C.red }, unknown: { label: 'Unknown', color: C.dim } };
+const todayISO   = () => new Date().toISOString().slice(0, 10);
+// Parse YYYY-MM-DD as a local date so it doesn't shift a day in US timezones
+const localDate  = d => (/^\d{4}-\d{2}-\d{2}$/.test(d || '') ? new Date(`${d}T00:00:00`) : null);
+
+function staleness(lastUpdated) {
+  const d = localDate(lastUpdated);
+  if (!d) return { label: 'Never updated', color: C.dim };
+  const days = Math.floor((new Date() - d) / 86400000);
+  const label = `${d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })} · ${days <= 0 ? 'today' : `${days}d ago`}`;
+  return { label, color: days > 90 ? C.red : days > 30 ? C.amber : C.muted };
+}
+
+function WatchRow({ w, onClick }) {
+  const [hov, setHov] = useState(false);
+  const tr = TREND_META[w.secondaryTrend] || TREND_META.unknown;
+  const lq = LIQ_META[w.liquidity] || LIQ_META.unknown;
+  const st = staleness(w.lastUpdated);
+  const cell = { fontSize: 12, color: C.muted, lineHeight: 1.5, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+  const lbl  = { fontSize: 9, color: C.dim, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 3 };
+  return (
+    <div onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)} className="iw-pre-row"
+      style={{ background: C.s1, border: `1px solid ${hov ? C.amberBdr : C.bdr}`, borderRadius: 8, padding: '14px 18px', cursor: 'pointer', transition: 'border-color .15s', display: 'grid', gridTemplateColumns: '1.3fr .8fr .8fr 1.2fr 1.6fr 1.2fr', gap: 14, alignItems: 'center' }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 15, fontWeight: 800, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.name}</div>
+        {w.notes && <div style={{ ...cell, fontSize: 11, color: C.dim, marginTop: 2 }}>{w.notes}</div>}
+      </div>
+      <div><div style={lbl}>Secondary</div><Badge label={tr.label} color={tr.color} /></div>
+      <div><div style={lbl}>Liquidity</div><Badge label={lq.label} color={lq.color} /></div>
+      <div style={{ minWidth: 0 }}><div style={lbl}>vs Last Round</div><div style={{ ...cell, color: w.impliedValuation ? C.text : C.dim }}>{w.impliedValuation || '—'}</div></div>
+      <div style={{ minWidth: 0 }}><div style={lbl}>IPO Readiness</div><div style={{ ...cell, color: w.ipoMarkers ? C.text : C.dim }} title={w.ipoMarkers}>{w.ipoMarkers || '—'}</div></div>
+      <div style={{ minWidth: 0 }}><div style={lbl}>Last Updated</div><div style={{ ...cell, color: st.color }}>{st.label}</div></div>
+    </div>
+  );
+}
+
+function WatchForm({ initial, onSave, onCancel, onDelete }) {
+  const blank = { name: '', layer: 'L1', secondaryTrend: 'unknown', liquidity: 'unknown', impliedValuation: '', ipoMarkers: '', notes: '', lastUpdated: todayISO() };
+  const [f, setF] = useState(initial ? { ...blank, ...initial } : blank);
+  const [err, setErr] = useState('');
+  const u = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const save = () => {
+    if (!f.name.trim()) return setErr('Company name is required.');
+    if (f.lastUpdated && !localDate(f.lastUpdated)) return setErr('Last updated must be YYYY-MM-DD (or blank).');
+    onSave({ ...f, name: f.name.trim(), id: initial?.id || `w${Date.now()}` });
+  };
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+        <Fld label="Company Name"><Inp value={f.name} onChange={e => u('name', e.target.value)} placeholder="Company" /></Fld>
+        <Fld label="Layer"><Sel value={f.layer} onChange={e => u('layer', e.target.value)} options={LAYERS.map(l => ({ value: l.id, label: l.label }))} /></Fld>
+        <Fld label="Secondary Price Trend"><Sel value={f.secondaryTrend} onChange={e => u('secondaryTrend', e.target.value)} options={Object.entries(TREND_META).map(([v, m]) => ({ value: v, label: m.label }))} /></Fld>
+        <Fld label="Liquidity"><Sel value={f.liquidity} onChange={e => u('liquidity', e.target.value)} options={Object.entries(LIQ_META).map(([v, m]) => ({ value: v, label: m.label }))} /></Fld>
+        <Fld label="Implied Valuation vs Last Round"><Inp value={f.impliedValuation} onChange={e => u('impliedValuation', e.target.value)} placeholder="above last round · 20% below" /></Fld>
+        <Fld label="Last Updated">
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Inp value={f.lastUpdated} onChange={e => u('lastUpdated', e.target.value)} placeholder="YYYY-MM-DD" />
+            <Btn onClick={() => u('lastUpdated', todayISO())} variant="secondary" sx={{ whiteSpace: 'nowrap' }}>Today</Btn>
+          </div>
+        </Fld>
+      </div>
+      <Fld label="IPO-Readiness Markers"><Inp multi value={f.ipoMarkers} onChange={e => u('ipoMarkers', e.target.value)} placeholder="S-1 chatter, banker mandates, late-stage round, CFO hire…" rows={3} /></Fld>
+      <Fld label="Notes"><Inp multi value={f.notes} onChange={e => u('notes', e.target.value)} placeholder="Source, context, what would make you act…" rows={3} /></Fld>
+      {err && <div style={{ fontSize: 12, color: C.red, marginBottom: 12 }}>{err}</div>}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        {onDelete ? <Btn onClick={onDelete} variant="danger">Delete</Btn> : <div />}
+        <div style={{ display: 'flex', gap: 10 }}>
+          <Btn onClick={onCancel} variant="ghost">Cancel</Btn>
+          <Btn onClick={save} variant="primary">Save Company</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PreIpoTab({ preipo, setPreipo, showToast }) {
+  const [layer, setLayer]   = useState('all');
+  const [addOpen, setAdd]   = useState(false);
+  const [editId, setEditId] = useState(null);
+
+  const persist = async next => {
+    setPreipo(next);
+    if (!(await store.set(SK.preipo, next))) showToast('Save failed — change not persisted to KV', 'err');
+  };
+  const save = async w => {
+    const next = preipo.find(x => x.id === w.id) ? preipo.map(x => x.id === w.id ? w : x) : [...preipo, w];
+    await persist(next);
+    setAdd(false); setEditId(null);
+  };
+  const del = async id => {
+    await persist(preipo.filter(x => x.id !== id));
+    setEditId(null);
+  };
+
+  const count  = id => preipo.filter(w => w.layer === id).length;
+  const groups = LAYERS.filter(l => layer === 'all' || l.id === layer)
+    .map(l => ({ ...l, rows: preipo.filter(w => w.layer === l.id).slice().sort((a, b) => a.name.localeCompare(b.name)) }))
+    .filter(g => g.rows.length > 0);
+  const stale = preipo.filter(w => { const d = localDate(w.lastUpdated); return !d || (new Date() - d) / 86400000 > 30; }).length;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <Btn onClick={() => setLayer('all')} variant={layer === 'all' ? 'primary' : 'ghost'} sx={{ fontSize: 11, padding: '5px 10px' }}>All ({preipo.length})</Btn>
+          {LAYERS.map(l => (
+            <Btn key={l.id} onClick={() => setLayer(l.id)} variant={layer === l.id ? 'primary' : 'ghost'} sx={{ fontSize: 11, padding: '5px 10px' }}>{l.label} ({count(l.id)})</Btn>
+          ))}
+        </div>
+        <Btn onClick={() => setAdd(true)} variant="primary">+ Add Company</Btn>
+      </div>
+
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 24 }}>
+        Private companies to own at IPO · manually tracked from private-market platforms
+        {stale > 0 && <span style={{ color: C.amber }}> · {stale} need{stale === 1 ? 's' : ''} a refresh (&gt;30d or never)</span>}
+      </div>
+
+      {groups.map(g => (
+        <div key={g.id} style={{ marginBottom: 28 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+            <div style={{ width: 3, height: 14, background: g.color, borderRadius: 2 }} />
+            <span style={{ fontSize: 11, fontWeight: 700, color: g.color, textTransform: 'uppercase', letterSpacing: '.09em' }}>{g.label}</span>
+            <span style={{ fontSize: 11, color: C.dim }}>{g.rows.length}</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {g.rows.map(w => <WatchRow key={w.id} w={w} onClick={() => setEditId(w.id)} />)}
+          </div>
+        </div>
+      ))}
+      {groups.length === 0 && <div style={{ textAlign: 'center', color: C.dim, padding: 60, fontSize: 14 }}>No companies in this view.</div>}
+
+      <Modal open={addOpen} onClose={() => setAdd(false)} title="Add Pre-IPO Company" width={640}>
+        {addOpen && <WatchForm initial={layer !== 'all' ? { layer } : null} onSave={save} onCancel={() => setAdd(false)} />}
+      </Modal>
+      <Modal open={!!editId} onClose={() => setEditId(null)} title="Edit Pre-IPO Company" width={640}>
+        {editId && <WatchForm key={editId} initial={preipo.find(w => w.id === editId)} onSave={save} onCancel={() => setEditId(null)} onDelete={() => del(editId)} />}
+      </Modal>
+    </div>
+  );
+}
+
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
 const TABS = [
   { id: 'portfolio',  label: 'Portfolio'      },
@@ -1069,6 +1229,7 @@ const TABS = [
   { id: 'research',   label: 'Research'       },
   { id: 'catalysts',  label: 'Catalysts'      },
   { id: 'theses',     label: 'Thesis Map'     },
+  { id: 'preipo',     label: 'Pre-IPO Watchlist' },
 ];
 
 export default function IwaajuDashboard() {
@@ -1078,6 +1239,7 @@ export default function IwaajuDashboard() {
   const [research,  setResearch]  = useState([]);
   const [catalysts, setCatalysts] = useState([]);
   const [theses,    setTheses]    = useState([]);
+  const [preipo,    setPreipo]    = useState([]);
   const [toast,    setToast]     = useState(null);
   const [importing, setImporting] = useState(false);
   const importRef = useRef(null);
@@ -1089,6 +1251,7 @@ export default function IwaajuDashboard() {
       setResearch( await store.get(SK.research)  || SEED.research);
       setCatalysts(await store.get(SK.catalysts) || SEED.catalysts);
       setTheses(   await store.get(SK.theses)    || SEED.theses);
+      setPreipo(   await store.get(SK.preipo)    || SEED.preipo);
     })();
   }, []);
 
@@ -1107,6 +1270,7 @@ export default function IwaajuDashboard() {
         [SK.research,  data.research],
         [SK.catalysts, data.catalysts],
         [SK.theses,    data.theses],
+        [SK.preipo,    data.preipo],
       ];
       await Promise.all(pairs.filter(([, v]) => v != null).map(([k, v]) => store.set(k, v)));
       showToast('Import complete');
@@ -1120,7 +1284,7 @@ export default function IwaajuDashboard() {
 
   const exportData = () => {
     try {
-      const blob = new Blob([JSON.stringify({ exportDate: new Date().toISOString(), portfolio, journal, research, catalysts, theses }, null, 2)], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify({ exportDate: new Date().toISOString(), portfolio, journal, research, catalysts, theses, preipo }, null, 2)], { type: 'application/json' });
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
       a.href     = url;
@@ -1135,7 +1299,7 @@ export default function IwaajuDashboard() {
 
   return (
     <div style={{ minHeight: '100vh', background: C.bg, color: C.text, fontFamily: '"Inter","SF Pro Display",-apple-system,BlinkMacSystemFont,sans-serif' }}>
-      <style>{`*{box-sizing:border-box;} body{margin:0;} ::placeholder{color:${C.dim};} select option{background:${C.s2};} @media(max-width:640px){.iw-grid-4{grid-template-columns:1fr 1fr!important;} .iw-sidebar{display:none!important;}}`}</style>
+      <style>{`*{box-sizing:border-box;} body{margin:0;} ::placeholder{color:${C.dim};} select option{background:${C.s2};} @media(max-width:640px){.iw-grid-4{grid-template-columns:1fr 1fr!important;} .iw-sidebar{display:none!important;} .iw-pre-row{grid-template-columns:1fr 1fr!important;}}`}</style>
 
       {/* Toast */}
       {toast && (
@@ -1178,6 +1342,7 @@ export default function IwaajuDashboard() {
         {tab === 'research'   && <ResearchTab   research={research}     setResearch={setResearch}   />}
         {tab === 'catalysts'  && <CatalystsTab  catalysts={catalysts}   setCatalysts={setCatalysts} />}
         {tab === 'theses'     && <ThesisMapTab  theses={theses}         setTheses={setTheses}       portfolio={portfolio} />}
+        {tab === 'preipo'     && <PreIpoTab     preipo={preipo}         setPreipo={setPreipo}       showToast={showToast} />}
       </main>
 
       {/* Footer */}
